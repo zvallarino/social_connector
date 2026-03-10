@@ -405,93 +405,327 @@ def run_search(platform: str, search_mode: str, query: str, max_results: int) ->
 # Streamlit UI
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="Social Connector", layout="wide")
-st.title("Social Connector — API Explorer")
-st.caption(
-    "Pick a platform, choose a search mode, and inspect the request vs response side-by-side."
-)
+PLATFORM_ICONS: Dict[str, str] = {
+    "X (Twitter)": "𝕏",
+    "Reddit": "🟠",
+    "Instagram": "📸",
+    "TikTok": "🎵",
+    "YouTube": "▶",
+    "OpenAI": "✦",
+    "Gemini": "✦",
+    "NIH PubMed": "🔬",
+    "ClinicalTrials.gov": "🏥",
+    "Crossref": "📚",
+    "Wikipedia": "📖",
+}
 
+st.set_page_config(page_title="Social Connector", layout="wide", page_icon="⚡")
+
+st.markdown("""
+<style>
+/* ── Global ── */
+[data-testid="stAppViewContainer"] { background: #0f1117; }
+[data-testid="stSidebar"] { background: #161b27; border-right: 1px solid #1f2937; }
+[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+
+/* ── Hide default Streamlit chrome ── */
+#MainMenu, footer, header { visibility: hidden; }
+
+/* ── Typography ── */
+h1, h2, h3 { font-family: "Inter", "Segoe UI", sans-serif !important; }
+
+/* ── Sidebar labels ── */
+.sidebar-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #4b5563 !important;
+    margin: 18px 0 6px 0;
+}
+
+/* ── Panel cards ── */
+.panel-card {
+    background: #161b27;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 20px 22px;
+    height: 100%;
+}
+.panel-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #6b7280;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+.panel-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.dot-request  { background: #3b82f6; }
+.dot-response { background: #10b981; }
+
+/* ── Status badge ── */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    margin-bottom: 14px;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+.status-2xx { background: #052e16; color: #34d399; border: 1px solid #065f46; }
+.status-3xx { background: #1c1917; color: #fbbf24; border: 1px solid #78350f; }
+.status-4xx { background: #2d0e0e; color: #f87171; border: 1px solid #7f1d1d; }
+.status-5xx { background: #2d0e0e; color: #f87171; border: 1px solid #7f1d1d; }
+.status-none { background: #1a1f2e; color: #9ca3af; border: 1px solid #374151; }
+
+/* ── Empty state ── */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 24px;
+    text-align: center;
+    background: #161b27;
+    border: 1px dashed #1f2937;
+    border-radius: 16px;
+    margin-top: 8px;
+}
+.empty-state-icon { font-size: 40px; margin-bottom: 16px; opacity: 0.5; }
+.empty-state-title { font-size: 16px; font-weight: 600; color: #6b7280; margin-bottom: 6px; }
+.empty-state-sub   { font-size: 13px; color: #374151; }
+
+/* ── No-key pill ── */
+.nokey-pill {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: #052e16;
+    color: #34d399;
+    border: 1px solid #065f46;
+    border-radius: 4px;
+    padding: 1px 5px;
+    vertical-align: middle;
+    margin-left: 4px;
+}
+
+/* ── Header ── */
+.app-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 6px 0 28px 0;
+    border-bottom: 1px solid #1f2937;
+    margin-bottom: 28px;
+}
+.app-header-icon {
+    width: 40px; height: 40px;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+}
+.app-header-title { font-size: 22px; font-weight: 700; color: #f1f5f9; margin: 0; }
+.app-header-sub   { font-size: 13px; color: #6b7280; margin: 0; }
+.connector-count  {
+    margin-left: auto;
+    background: #1f2937;
+    border: 1px solid #374151;
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #9ca3af;
+}
+
+/* ── Sidebar send button ── */
+[data-testid="stButton"] > button {
+    width: 100%;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    padding: 10px !important;
+    margin-top: 8px;
+    transition: opacity 0.2s;
+}
+[data-testid="stButton"] > button:hover { opacity: 0.88 !important; }
+
+/* ── Stcode blocks ── */
+[data-testid="stCode"] { border-radius: 8px !important; border: 1px solid #1f2937 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Header ──────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="app-header">
+  <div class="app-header-icon">⚡</div>
+  <div>
+    <p class="app-header-title">Social Connector</p>
+    <p class="app-header-sub">Inspect live API requests &amp; responses across 11 platforms</p>
+  </div>
+  <div class="connector-count">11 connectors</div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("Options")
+    st.markdown("""
+    <div style="padding: 18px 0 10px 0;">
+      <p style="font-size:18px; font-weight:700; color:#f1f5f9; margin:0;">Configuration</p>
+      <p style="font-size:12px; color:#6b7280; margin:4px 0 0 0;">Select a connector and run a query</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.markdown("**Key-required connectors**")
-    key_platforms = [p for p in PLATFORM_MODES if p not in NO_KEY_PLATFORMS]
-    st.markdown("**No-key test connectors**")
-    no_key_platforms = list(NO_KEY_PLATFORMS)
+    st.markdown('<p class="sidebar-section-label">Platform</p>', unsafe_allow_html=True)
+
+    def _fmt(p: str) -> str:
+        icon = PLATFORM_ICONS.get(p, "")
+        tag = " ★" if p in NO_KEY_PLATFORMS else ""
+        return f"{icon}  {p}{tag}"
 
     platform = st.selectbox(
-        "Choose API",
+        "Platform",
         list(PLATFORM_MODES.keys()),
-        help="Platforms marked with ★ require no API key.",
-        format_func=lambda p: f"★ {p}" if p in NO_KEY_PLATFORMS else p,
+        format_func=_fmt,
+        label_visibility="collapsed",
     )
 
-    available_modes = PLATFORM_MODES[platform]
-    mode = st.radio("Mode", available_modes)
-
-    if platform in {"OpenAI", "Gemini"}:
-        query_placeholder = "e.g. Explain transformer architecture in one paragraph"
-        query_help = "Your prompt / message to the model."
-    elif platform in NO_KEY_PLATFORMS:
-        query_placeholder = "e.g. mRNA vaccine clinical outcomes"
-        query_help = "Search term — no API key required."
+    if platform in NO_KEY_PLATFORMS:
+        st.markdown(
+            f'<p style="font-size:12px; color:#34d399; margin:-4px 0 8px 0;">'
+            f'✓ No API key required</p>',
+            unsafe_allow_html=True,
+        )
     else:
-        query_placeholder = "e.g. openai  OR  @elonmusk  OR  #ai"
-        query_help = "Search query, username, or keyword depending on mode."
+        st.markdown(
+            f'<p style="font-size:12px; color:#6b7280; margin:-4px 0 8px 0;">'
+            f'🔑 API key required</p>',
+            unsafe_allow_html=True,
+        )
 
-    query = st.text_input("Query / keyword / prompt", placeholder=query_placeholder, help=query_help)
-    max_results = st.slider("Max results / tokens multiplier", min_value=1, max_value=50, value=10)
+    st.markdown('<p class="sidebar-section-label">Mode</p>', unsafe_allow_html=True)
+    available_modes = PLATFORM_MODES[platform]
+    mode = st.radio("Mode", available_modes, label_visibility="collapsed", horizontal=True)
 
-    submit = st.button("Send request", type="primary")
+    st.markdown('<p class="sidebar-section-label">Query</p>', unsafe_allow_html=True)
+    if platform in {"OpenAI", "Gemini"}:
+        query_placeholder = "Enter your prompt…"
+    elif platform in NO_KEY_PLATFORMS:
+        query_placeholder = "e.g. mRNA vaccine outcomes"
+    else:
+        query_placeholder = "keyword, @username, or #hashtag"
 
+    query = st.text_input("Query", placeholder=query_placeholder, label_visibility="collapsed")
+
+    st.markdown('<p class="sidebar-section-label">Max results</p>', unsafe_allow_html=True)
+    max_results = st.slider("Max results", min_value=1, max_value=50, value=10, label_visibility="collapsed")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    submit = st.button("⚡  Send Request", type="primary")
+
+    st.markdown("""
+    <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #1f2937;">
+      <p class="sidebar-section-label">No-key connectors</p>
+      <p style="font-size:12px; color:#6b7280; line-height:1.7;">
+        NIH PubMed · ClinicalTrials.gov<br>Crossref · Wikipedia
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Main content ─────────────────────────────────────────────────────────────
 if submit:
-    result = run_search(platform, mode, query, max_results)
+    with st.spinner("Sending request…"):
+        result = run_search(platform, mode, query, max_results)
 
     if result.error:
-        st.error(result.error)
+        st.markdown(f"""
+        <div style="background:#2d0e0e; border:1px solid #7f1d1d; border-radius:10px;
+                    padding:14px 18px; margin-bottom:20px; color:#f87171; font-size:14px;">
+          <strong>Error:</strong> {result.error}
+        </div>""", unsafe_allow_html=True)
 
-    left, right = st.columns(2)
+    left, right = st.columns(2, gap="medium")
 
     with left:
-        st.subheader("What we're sending")
+        st.markdown("""
+        <div class="panel-title">
+          <span class="panel-dot dot-request"></span> Request
+        </div>""", unsafe_allow_html=True)
         st.code(json.dumps(result.request_details, indent=2), language="json")
 
     with right:
-        st.subheader("What we're receiving")
-        st.write(f"Status code: `{result.status_code}`" if result.status_code else "No HTTP response status.")
+        # Status badge
+        code = result.status_code
+        if code is None:
+            badge_cls, label = "status-none", "No response"
+        elif code < 300:
+            badge_cls, label = "status-2xx", f"{code} OK"
+        elif code < 400:
+            badge_cls, label = "status-3xx", f"{code} Redirect"
+        elif code < 500:
+            badge_cls, label = "status-4xx", f"{code} Client Error"
+        else:
+            badge_cls, label = "status-5xx", f"{code} Server Error"
+
+        st.markdown(f"""
+        <div class="panel-title">
+          <span class="panel-dot dot-response"></span> Response
+        </div>
+        <span class="status-badge {badge_cls}">{label}</span>
+        """, unsafe_allow_html=True)
+
         if isinstance(result.response_body, (dict, list)):
             st.json(result.response_body)
         else:
             st.code(str(result.response_body))
+
 else:
-    st.info("Choose a platform + mode, enter a query, then click **Send request**.")
+    icon = PLATFORM_ICONS.get(platform, "⚡")
+    st.markdown(f"""
+    <div class="empty-state">
+      <div class="empty-state-icon">{icon}</div>
+      <p class="empty-state-title">Ready to connect to {platform}</p>
+      <p class="empty-state-sub">Configure your query in the sidebar and click <strong style="color:#9ca3af">Send Request</strong>.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-with st.expander("Setup checklist"):
-    st.markdown(
-        """
-### Quick start
-1. Create a Python virtual environment and activate it.
-2. `pip install -r requirements.txt`
-3. Copy `.env.example` → `.env` and fill in your credentials.
-4. `streamlit run app.py`
+with st.expander("Setup & credentials reference"):
+    st.markdown("""
+**Quick start**
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # fill in your keys
+streamlit run app.py
+```
 
-### No-key test connectors (smoke-test without any credentials)
-- **NIH PubMed** — NCBI E-utilities article search
-- **ClinicalTrials.gov** — Study search via ClinicalTrials API v2
-- **Crossref** — Academic works search
-- **Wikipedia** — Full-text search + page summary
-
-### Key-required connectors
-| Platform | Environment variable(s) |
-|---|---|
-| X (Twitter) | `TWITTER_BEARER_TOKEN` |
-| Reddit | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` |
-| Instagram | `INSTAGRAM_ACCESS_TOKEN` |
-| TikTok | `TIKTOK_ACCESS_TOKEN` |
-| YouTube | `YOUTUBE_API_KEY` |
-| OpenAI | `OPENAI_API_KEY` |
-| Gemini | `GEMINI_API_KEY` |
-
-**Tip:** For production use, consider API policy constraints, pagination, and rate limiting.
-        """
-    )
+| Platform | Environment variable(s) | Key needed? |
+|---|---|:---:|
+| X (Twitter) | `TWITTER_BEARER_TOKEN` | ✓ |
+| Reddit | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | ✓ |
+| Instagram | `INSTAGRAM_ACCESS_TOKEN` | ✓ |
+| TikTok | `TIKTOK_ACCESS_TOKEN` | ✓ |
+| YouTube | `YOUTUBE_API_KEY` | ✓ |
+| OpenAI | `OPENAI_API_KEY` | ✓ |
+| Gemini | `GEMINI_API_KEY` | ✓ |
+| NIH PubMed | — | No |
+| ClinicalTrials.gov | — | No |
+| Crossref | — | No |
+| Wikipedia | — | No |
+    """)
