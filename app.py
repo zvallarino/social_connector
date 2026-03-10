@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 import streamlit as st
@@ -29,39 +29,93 @@ class BaseClient:
             return response.text
 
 
-class YouTubeClient(BaseClient):
-    BASE_URL = "https://www.googleapis.com/youtube/v3/search"
+# ---------------------------------------------------------------------------
+# Key-required connectors
+# ---------------------------------------------------------------------------
+
+class TwitterClient(BaseClient):
+    BASE_URL = "https://api.twitter.com/2"
 
     def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
-        api_key = os.getenv("YOUTUBE_API_KEY")
-        if not api_key:
-            return ApiResult(
-                request_details={},
-                status_code=None,
-                response_body={},
-                error="Missing YOUTUBE_API_KEY in environment.",
-            )
+        bearer_token = os.getenv("TWITTER_BEARER_TOKEN")
+        if not bearer_token:
+            return ApiResult({}, None, {}, error="Missing TWITTER_BEARER_TOKEN in environment.")
 
-        item_type = "video" if search_mode == "post" else "channel"
-        params = {
-            "part": "snippet",
-            "q": query,
-            "type": item_type,
-            "maxResults": max_results,
-            "key": api_key,
-        }
+        headers = {"Authorization": f"Bearer {bearer_token}"}
+        redacted_headers = {"Authorization": "Bearer ***redacted***"}
 
-        request_details = {
-            "method": "GET",
-            "url": self.BASE_URL,
-            "params": {**params, "key": "***redacted***"},
-        }
+        if search_mode == "profile":
+            username = query.lstrip("@")
+            url = f"{self.BASE_URL}/users/by/username/{username}"
+            params = {"user.fields": "name,username,description,public_metrics,created_at"}
+            request_details = {"method": "GET", "url": url, "params": params, "headers": redacted_headers}
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+                return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+            except requests.RequestException as exc:
+                return ApiResult(request_details, None, {}, error=str(exc))
+        else:
+            url = f"{self.BASE_URL}/tweets/search/recent"
+            params = {
+                "query": query,
+                "max_results": min(max(max_results, 10), 100),
+                "tweet.fields": "created_at,author_id,text,public_metrics",
+            }
+            request_details = {"method": "GET", "url": url, "params": params, "headers": redacted_headers}
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+                return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+            except requests.RequestException as exc:
+                return ApiResult(request_details, None, {}, error=str(exc))
+
+
+class RedditClient(BaseClient):
+    TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+    BASE_URL = "https://oauth.reddit.com"
+
+    def _get_token(self, client_id: str, client_secret: str) -> Optional[str]:
+        resp = requests.post(
+            self.TOKEN_URL,
+            auth=(client_id, client_secret),
+            data={"grant_type": "client_credentials"},
+            headers={"User-Agent": "SocialConnector/1.0"},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json().get("access_token")
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        client_id = os.getenv("REDDIT_CLIENT_ID")
+        client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            return ApiResult({}, None, {}, error="Missing REDDIT_CLIENT_ID or REDDIT_CLIENT_SECRET in environment.")
 
         try:
-            response = requests.get(self.BASE_URL, params=params, timeout=self.timeout)
-            return ApiResult(request_details, response.status_code, self._safe_json(response))
+            token = self._get_token(client_id, client_secret)
         except requests.RequestException as exc:
-            return ApiResult(request_details, None, {}, error=str(exc))
+            return ApiResult({}, None, {}, error=f"Reddit auth failed: {exc}")
+
+        headers = {"Authorization": f"Bearer {token}", "User-Agent": "SocialConnector/1.0"}
+        redacted_headers = {"Authorization": "Bearer ***redacted***", "User-Agent": "SocialConnector/1.0"}
+
+        if search_mode == "profile":
+            url = f"{self.BASE_URL}/user/{query}/about"
+            params: Dict[str, Any] = {}
+            request_details = {"method": "GET", "url": url, "params": params, "headers": redacted_headers}
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+                return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+            except requests.RequestException as exc:
+                return ApiResult(request_details, None, {}, error=str(exc))
+        else:
+            url = f"{self.BASE_URL}/search"
+            params = {"q": query, "limit": max_results, "type": "link", "sort": "relevance"}
+            request_details = {"method": "GET", "url": url, "params": params, "headers": redacted_headers}
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+                return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+            except requests.RequestException as exc:
+                return ApiResult(request_details, None, {}, error=str(exc))
 
 
 class InstagramClient(BaseClient):
@@ -70,16 +124,11 @@ class InstagramClient(BaseClient):
     def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
         access_token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
         if not access_token:
-            return ApiResult(
-                request_details={},
-                status_code=None,
-                response_body={},
-                error="Missing INSTAGRAM_ACCESS_TOKEN in environment.",
-            )
+            return ApiResult({}, None, {}, error="Missing INSTAGRAM_ACCESS_TOKEN in environment.")
 
         if search_mode == "profile":
             endpoint = f"{self.BASE_URL}/me"
-            params = {
+            params: Dict[str, Any] = {
                 "fields": "id,username,account_type,media_count",
                 "access_token": access_token,
             }
@@ -100,10 +149,9 @@ class InstagramClient(BaseClient):
                 "Use a Graph/Business setup for broader discovery."
             ),
         }
-
         try:
-            response = requests.get(endpoint, params=params, timeout=self.timeout)
-            return ApiResult(request_details, response.status_code, self._safe_json(response))
+            resp = requests.get(endpoint, params=params, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
         except requests.RequestException as exc:
             return ApiResult(request_details, None, {}, error=str(exc))
 
@@ -114,12 +162,7 @@ class TikTokClient(BaseClient):
     def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
         access_token = os.getenv("TIKTOK_ACCESS_TOKEN")
         if not access_token:
-            return ApiResult(
-                request_details={},
-                status_code=None,
-                response_body={},
-                error="Missing TIKTOK_ACCESS_TOKEN in environment.",
-            )
+            return ApiResult({}, None, {}, error="Missing TIKTOK_ACCESS_TOKEN in environment.")
 
         endpoint = f"{self.BASE_URL}/v2/research/video/query/"
         hashtags = [tag.strip().lstrip("#") for tag in query.split() if tag.strip()] if search_mode == "hashtag" else []
@@ -140,20 +183,10 @@ class TikTokClient(BaseClient):
 
         if search_mode in {"profile", "post"}:
             payload["query"] = {
-                "and": [
-                    {
-                        "operation": "EQ",
-                        "field_name": "keyword",
-                        "field_values": [query],
-                    }
-                ]
+                "and": [{"operation": "EQ", "field_name": "keyword", "field_values": [query]}]
             }
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
-
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         request_details = {
             "method": "POST",
             "url": endpoint,
@@ -164,46 +197,250 @@ class TikTokClient(BaseClient):
                 "that supports hashtag querying."
             ),
         }
-
         try:
-            response = requests.post(
-                endpoint,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            return ApiResult(request_details, response.status_code, self._safe_json(response))
+            resp = requests.post(endpoint, headers=headers, json=payload, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
         except requests.RequestException as exc:
             return ApiResult(request_details, None, {}, error=str(exc))
 
 
+class YouTubeClient(BaseClient):
+    BASE_URL = "https://www.googleapis.com/youtube/v3/search"
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        api_key = os.getenv("YOUTUBE_API_KEY")
+        if not api_key:
+            return ApiResult({}, None, {}, error="Missing YOUTUBE_API_KEY in environment.")
+
+        item_type = "video" if search_mode == "post" else "channel"
+        params: Dict[str, Any] = {
+            "part": "snippet",
+            "q": query,
+            "type": item_type,
+            "maxResults": max_results,
+            "key": api_key,
+        }
+        request_details = {"method": "GET", "url": self.BASE_URL, "params": {**params, "key": "***redacted***"}}
+        try:
+            resp = requests.get(self.BASE_URL, params=params, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+        except requests.RequestException as exc:
+            return ApiResult(request_details, None, {}, error=str(exc))
+
+
+class OpenAIClient(BaseClient):
+    BASE_URL = "https://api.openai.com/v1/chat/completions"
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return ApiResult({}, None, {}, error="Missing OPENAI_API_KEY in environment.")
+
+        payload: Dict[str, Any] = {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": query}],
+            "max_tokens": max(max_results * 20, 100),
+        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        request_details = {
+            "method": "POST",
+            "url": self.BASE_URL,
+            "headers": {"Authorization": "Bearer ***redacted***", "Content-Type": "application/json"},
+            "json": payload,
+        }
+        try:
+            resp = requests.post(self.BASE_URL, headers=headers, json=payload, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+        except requests.RequestException as exc:
+            return ApiResult(request_details, None, {}, error=str(exc))
+
+
+class GeminiClient(BaseClient):
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return ApiResult({}, None, {}, error="Missing GEMINI_API_KEY in environment.")
+
+        payload: Dict[str, Any] = {"contents": [{"parts": [{"text": query}]}]}
+        url = f"{self.BASE_URL}?key={api_key}"
+        request_details = {
+            "method": "POST",
+            "url": f"{self.BASE_URL}?key=***redacted***",
+            "json": payload,
+        }
+        try:
+            resp = requests.post(url, json=payload, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+        except requests.RequestException as exc:
+            return ApiResult(request_details, None, {}, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# No-key test connectors
+# ---------------------------------------------------------------------------
+
+class PubMedClient(BaseClient):
+    BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        params: Dict[str, Any] = {
+            "db": "pubmed",
+            "retmode": "json",
+            "term": query,
+            "retmax": max_results,
+        }
+        request_details = {"method": "GET", "url": self.BASE_URL, "params": params}
+        try:
+            resp = requests.get(self.BASE_URL, params=params, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+        except requests.RequestException as exc:
+            return ApiResult(request_details, None, {}, error=str(exc))
+
+
+class ClinicalTrialsClient(BaseClient):
+    BASE_URL = "https://clinicaltrials.gov/api/v2/studies"
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        params: Dict[str, Any] = {
+            "query.term": query,
+            "pageSize": max_results,
+            "format": "json",
+        }
+        request_details = {"method": "GET", "url": self.BASE_URL, "params": params}
+        try:
+            resp = requests.get(self.BASE_URL, params=params, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+        except requests.RequestException as exc:
+            return ApiResult(request_details, None, {}, error=str(exc))
+
+
+class CrossrefClient(BaseClient):
+    BASE_URL = "https://api.crossref.org/works"
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        params: Dict[str, Any] = {
+            "query": query,
+            "rows": max_results,
+            "select": "DOI,title,author,published,type,URL",
+        }
+        request_details = {"method": "GET", "url": self.BASE_URL, "params": params}
+        try:
+            resp = requests.get(self.BASE_URL, params=params, timeout=self.timeout)
+            return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+        except requests.RequestException as exc:
+            return ApiResult(request_details, None, {}, error=str(exc))
+
+
+class WikipediaClient(BaseClient):
+    SEARCH_URL = "https://en.wikipedia.org/w/api.php"
+    SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
+
+    def search(self, search_mode: str, query: str, max_results: int) -> ApiResult:
+        if search_mode == "summary":
+            url = f"{self.SUMMARY_URL}/{requests.utils.quote(query)}"
+            request_details = {"method": "GET", "url": url}
+            try:
+                resp = requests.get(url, timeout=self.timeout)
+                return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+            except requests.RequestException as exc:
+                return ApiResult(request_details, None, {}, error=str(exc))
+        else:
+            params: Dict[str, Any] = {
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "srlimit": max_results,
+                "format": "json",
+                "utf8": 1,
+            }
+            request_details = {"method": "GET", "url": self.SEARCH_URL, "params": params}
+            try:
+                resp = requests.get(self.SEARCH_URL, params=params, timeout=self.timeout)
+                return ApiResult(request_details, resp.status_code, self._safe_json(resp))
+            except requests.RequestException as exc:
+                return ApiResult(request_details, None, {}, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Platform registry
+# ---------------------------------------------------------------------------
+
+PLATFORM_MODES: Dict[str, List[str]] = {
+    "X (Twitter)": ["Post", "Profile"],
+    "Reddit": ["Post", "Profile"],
+    "Instagram": ["Post", "Profile"],
+    "TikTok": ["Post", "Profile", "Hashtag"],
+    "YouTube": ["Post", "Profile"],
+    "OpenAI": ["Generate"],
+    "Gemini": ["Generate"],
+    "NIH PubMed": ["Search"],
+    "ClinicalTrials.gov": ["Search"],
+    "Crossref": ["Search"],
+    "Wikipedia": ["Search", "Summary"],
+}
+
+NO_KEY_PLATFORMS = {"NIH PubMed", "ClinicalTrials.gov", "Crossref", "Wikipedia"}
+
+
 def run_search(platform: str, search_mode: str, query: str, max_results: int) -> ApiResult:
-    clients = {
-        "YouTube": YouTubeClient(),
+    clients: Dict[str, BaseClient] = {
+        "X (Twitter)": TwitterClient(),
+        "Reddit": RedditClient(),
         "Instagram": InstagramClient(),
         "TikTok": TikTokClient(),
+        "YouTube": YouTubeClient(),
+        "OpenAI": OpenAIClient(),
+        "Gemini": GeminiClient(),
+        "NIH PubMed": PubMedClient(),
+        "ClinicalTrials.gov": ClinicalTrialsClient(),
+        "Crossref": CrossrefClient(),
+        "Wikipedia": WikipediaClient(),
     }
     return clients[platform].search(search_mode.lower(), query, max_results)
 
 
+# ---------------------------------------------------------------------------
+# Streamlit UI
+# ---------------------------------------------------------------------------
+
 st.set_page_config(page_title="Social Connector", layout="wide")
 st.title("Social Connector — API Explorer")
 st.caption(
-    "Super-simple front page: pick a platform, choose search mode, and inspect request vs response."
+    "Pick a platform, choose a search mode, and inspect the request vs response side-by-side."
 )
 
 with st.sidebar:
     st.header("Options")
-    platform = st.selectbox("Choose API", ["Instagram", "YouTube", "TikTok"])
 
-    available_modes = ["Post", "Profile"]
-    if platform == "TikTok":
-        available_modes.append("Hashtag")
+    st.markdown("**Key-required connectors**")
+    key_platforms = [p for p in PLATFORM_MODES if p not in NO_KEY_PLATFORMS]
+    st.markdown("**No-key test connectors**")
+    no_key_platforms = list(NO_KEY_PLATFORMS)
 
-    mode = st.radio("Search by", available_modes)
-    query_help = "Required for YouTube and TikTok. Instagram may ignore free-text query for some endpoints."
-    query = st.text_input("Query / username / keyword", placeholder="e.g. openai OR #ai", help=query_help)
-    max_results = st.slider("Max results", min_value=1, max_value=50, value=10)
+    platform = st.selectbox(
+        "Choose API",
+        list(PLATFORM_MODES.keys()),
+        help="Platforms marked with ★ require no API key.",
+        format_func=lambda p: f"★ {p}" if p in NO_KEY_PLATFORMS else p,
+    )
+
+    available_modes = PLATFORM_MODES[platform]
+    mode = st.radio("Mode", available_modes)
+
+    if platform in {"OpenAI", "Gemini"}:
+        query_placeholder = "e.g. Explain transformer architecture in one paragraph"
+        query_help = "Your prompt / message to the model."
+    elif platform in NO_KEY_PLATFORMS:
+        query_placeholder = "e.g. mRNA vaccine clinical outcomes"
+        query_help = "Search term — no API key required."
+    else:
+        query_placeholder = "e.g. openai  OR  @elonmusk  OR  #ai"
+        query_help = "Search query, username, or keyword depending on mode."
+
+    query = st.text_input("Query / keyword / prompt", placeholder=query_placeholder, help=query_help)
+    max_results = st.slider("Max results / tokens multiplier", min_value=1, max_value=50, value=10)
 
     submit = st.button("Send request", type="primary")
 
@@ -227,16 +464,34 @@ if submit:
         else:
             st.code(str(result.response_body))
 else:
-    st.info("Choose API + search mode, then click **Send request**.")
+    st.info("Choose a platform + mode, enter a query, then click **Send request**.")
 
 with st.expander("Setup checklist"):
     st.markdown(
         """
-1. Create a Python virtual environment.
-2. Install dependencies from `requirements.txt`.
-3. Put credentials in `.env` (see `.env.example`).
-4. Run `streamlit run app.py`.
+### Quick start
+1. Create a Python virtual environment and activate it.
+2. `pip install -r requirements.txt`
+3. Copy `.env.example` → `.env` and fill in your credentials.
+4. `streamlit run app.py`
 
-**Tip:** For production scraping and broad discovery use-cases, consider API policy constraints and pagination/rate limiting.
+### No-key test connectors (smoke-test without any credentials)
+- **NIH PubMed** — NCBI E-utilities article search
+- **ClinicalTrials.gov** — Study search via ClinicalTrials API v2
+- **Crossref** — Academic works search
+- **Wikipedia** — Full-text search + page summary
+
+### Key-required connectors
+| Platform | Environment variable(s) |
+|---|---|
+| X (Twitter) | `TWITTER_BEARER_TOKEN` |
+| Reddit | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` |
+| Instagram | `INSTAGRAM_ACCESS_TOKEN` |
+| TikTok | `TIKTOK_ACCESS_TOKEN` |
+| YouTube | `YOUTUBE_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| Gemini | `GEMINI_API_KEY` |
+
+**Tip:** For production use, consider API policy constraints, pagination, and rate limiting.
         """
     )
